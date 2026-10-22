@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TradeLog Pro for Exness",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Capture a chart and log a trade to TradeLog Pro Journal.",
   "permissions": [
     "storage",
@@ -20,8 +20,7 @@
     "https://xm.com/*",
     "https://tradingview.com/*",
     "https://*.tradingview.com/*",
-    "https://indexhtml-glt-main-royak-kings-circle.vercel.app/*",
-    "https://trading-journa.vercel.app/*"
+    "https://indexhtml-olive-delta.vercel.app/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -66,8 +65,7 @@
     },
     {
       "matches": [
-        "https://indexhtml-glt-main-royak-kings-circle.vercel.app/*",
-        "https://trading-journa.vercel.app/*"
+        "https://indexhtml-olive-delta.vercel.app/*"
       ],
       "js": [
         "journal-bridge.js"
