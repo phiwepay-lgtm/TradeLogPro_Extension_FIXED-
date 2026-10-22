@@ -1,0 +1,13 @@
+{
+  "name": "tradelog-pro-exness",
+  "version": "1.2.0",
+  "private": true,
+  "description": "Chrome extension that captures Exness trades into the TradeLog Pro journal.",
+  "scripts": {
+    "test": "node --test tests/detect.test.js tests/panel.test.js",
+    "test:pure": "node --test tests/detect.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.3"
+  }
+}
