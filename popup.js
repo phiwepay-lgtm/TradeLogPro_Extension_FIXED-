@@ -27,7 +27,7 @@
   } else {
     set(`Screenshot access is ready on ${platform}.`, 'ok');
     note('Click <b>＋ Log trade</b> at the bottom-right, or double-click the <b>Long Position</b> / <b>Short Position</b> tool. '
-      + 'Screenshots work without clicking this icon first.');
+      + 'The panel opens instantly — type or paste the values, drag the panel anywhere, and retake the screenshot if you need to.');
   }
 
   if (pendingExnessTrade) {

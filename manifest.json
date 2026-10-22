@@ -1,12 +1,11 @@
 {
   "manifest_version": 3,
   "name": "TradeLog Pro for Exness",
-  "version": "1.3.0",
-  "description": "Capture a chart and send reviewed trade details to TradeLog Pro Journal.",
+  "version": "2.0.0",
+  "description": "Capture a chart and log a trade to TradeLog Pro Journal.",
   "permissions": [
     "storage",
-    "activeTab",
-    "scripting"
+    "activeTab"
   ],
   "action": {
     "default_title": "TradeLog screenshot capture",
@@ -34,7 +33,7 @@
         "https://*.exness.com/*"
       ],
       "js": [
-        "trade-detect.js",
+        "lot-math.js",
         "exness.js"
       ],
       "run_at": "document_idle",
@@ -47,7 +46,7 @@
         "https://xm.com/*"
       ],
       "js": [
-        "trade-detect.js",
+        "lot-math.js",
         "exness.js"
       ],
       "run_at": "document_idle",
@@ -59,7 +58,7 @@
         "https://*.tradingview.com/*"
       ],
       "js": [
-        "trade-detect.js",
+        "lot-math.js",
         "exness.js"
       ],
       "run_at": "document_idle",
