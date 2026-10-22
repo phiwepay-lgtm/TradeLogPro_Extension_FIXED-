@@ -102,9 +102,13 @@ revokes `<all_urls>`.
 ```
 
 `status` is `Full TP`, `Stop Loss`, `Break Even`, `Manual Close` or `Open`;
-`pnl` and `r` are derived from `exit − entry`, lots and the contract value. If the
-journal's import receiver ignores these keys it will keep painting imported trades as
-open, so it has to read them.
+`pnl` and `r` are derived from `exit − entry`, lots and the contract value.
+
+**The journal has to use them.** `journal-patch/tradelog-import.js` is a drop-in receiver
+for the journal page that normalises an incoming trade and answers the handshake the
+bridge expects; `docs/JOURNAL-SIDE.md` explains the three lines it takes to wire it up
+and how the table should read `exit`/`pnl`/`r`. Until the journal does that, imported
+trades will still render as open positions.
 
 ## Journal handoff
 
@@ -147,6 +151,12 @@ Nothing is sent anywhere; a submitted trade is printed to the console instead.
 npm install     # jsdom, for the DOM tests
 npm test
 ```
+
+`tests/journal-patch.test.js` covers the journal-side receiver: a winning short journals
+with its money and R, a stop-out is −1R, an exit at entry is break even, no exit stays
+open whatever the outcome says, a broker P&L is never overwritten, and the handshake
+acknowledges exactly once (including a retry that lands mid-save) and stays silent when
+the save fails.
 
 `tests/config.test.js` guards the journal wiring: every `JOURNAL_URLS` entry must appear in
 both `host_permissions` and the content-script matches, no dead hosts may linger, and the

@@ -4,7 +4,7 @@
   "private": true,
   "description": "Chrome extension that logs Exness trades into the TradeLog Pro journal.",
   "scripts": {
-    "test": "node --test tests/lot-math.test.js tests/config.test.js tests/panel.test.js",
+    "test": "node --test tests/lot-math.test.js tests/config.test.js tests/journal-patch.test.js tests/panel.test.js",
     "test:math": "node --test tests/lot-math.test.js"
   },
   "devDependencies": {
