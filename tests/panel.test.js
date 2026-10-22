@@ -277,17 +277,66 @@ domTest('a missing journal tag never blocks the send', async () => {
 
 /* ------------------------------------------------------------- behaving well */
 
-domTest('the panel remembers what you type for next time', async () => {
-  const { window, panel } = await openPanel();
+domTest('a fresh panel opens clean, with nothing from the previous trade', async () => {
+  const { window, shadow, panel } = await openPanel();
+
+  // Fill everything, tags included, then close without sending.
   completeBasics(window, panel);
   setValue(window, field(panel, 'tlx-balance'), '2500');
-  panel.querySelector('#tlx-cancel').click();
+  setValue(window, field(panel, 'tlx-risk-pct'), '1.5');
+  field(panel, 'tlx-exec').value = 'VHB + Engulf Trigger';
+  field(panel, 'tlx-bias').value = 'Reversal';
+  field(panel, 'tlx-mgmt').value = 'Trailed Stop';
+  field(panel, 'tlx-session').value = 'london';
+  field(panel, 'tlx-emotion').value = '😌 Calm';
+  field(panel, 'tlx-type').value = 'FTB 0.382';
+  panel.querySelector('.tlx-cancel').click();
   await new Promise(resolve => setTimeout(resolve, 20));
 
-  const stored = window.chrome.__store.tlxLastUsed;
-  assert.equal(stored.symbol, 'EUR/USD');
-  assert.equal(stored.lots, '0.1');
-  assert.equal(stored.balance, '2500');
+  // Reopen: every trade value must be empty again.
+  shadow.querySelector('.tlx-launch').click();
+  const deadline = Date.now() + 2000;
+  while (!shadow.querySelector('.tlx-panel') && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  const fresh = shadow.querySelector('.tlx-panel');
+  assert.ok(fresh, 'panel reopened');
+
+  const tradeFields = [
+    'tlx-symbol', 'tlx-entry', 'tlx-sl', 'tlx-tp', 'tlx-lots',
+    'tlx-balance', 'tlx-risk-pct', 'tlx-point-value', 'tlx-outcome',
+    'tlx-exec', 'tlx-bias', 'tlx-mgmt', 'tlx-session', 'tlx-emotion', 'tlx-type'
+  ];
+  for (const id of tradeFields) {
+    assert.equal(field(fresh, id).value, '', `${id} must start empty`);
+  }
+
+  // Only this-moment values are set.
+  assert.equal(field(fresh, 'tlx-dir').value, 'buy');
+  assert.ok(field(fresh, 'tlx-date').value, 'date/time stamped now');
+
+  // Nothing about the previous trade is written to storage.
+  assert.equal(window.chrome.__store.tlxLastUsed, undefined);
+});
+
+domTest('a sent trade does not prefill the next panel either', async () => {
+  const { window, shadow, panel } = await openPanel();
+  completeBasics(window, panel);
+  panel.querySelector('#tlx-send').click();
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.ok(window.chrome.__store.__saved, 'trade sent');
+
+  shadow.querySelector('.tlx-launch').click();
+  const deadline = Date.now() + 2000;
+  while (!shadow.querySelector('.tlx-panel') && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  const fresh = shadow.querySelector('.tlx-panel');
+  assert.equal(field(fresh, 'tlx-symbol').value, '');
+  assert.equal(field(fresh, 'tlx-entry').value, '');
+  assert.equal(field(fresh, 'tlx-lots').value, '');
+  assert.equal(field(fresh, 'tlx-outcome').value, '');
+  assert.equal(window.chrome.__store.tlxLastUsed, undefined);
 });
 
 domTest('opening twice does not stack panels', async () => {

@@ -23,8 +23,13 @@ running in already-open tabs.
 Click **＋ Log trade** (bottom-right) or double-click a control labelled **Long Position**
 / **Short Position**. The panel opens immediately with the screenshot already taken.
 
-1. **Instrument / direction** — remembered from the last trade; direction comes from the
-   double-click when you use it.
+**Every panel opens clean.** Nothing is carried over from the previous trade — no
+instrument, prices, size, balance, tags, outcome or screenshot. The only values set when
+it opens are the direction (Long, or your choice from a double-click) and the current date
+and time. The single thing remembered is where you dragged the panel to.
+
+1. **Instrument / direction** — type or pick the instrument; direction comes from the
+   double-click when you use it, otherwise Long.
 2. **Entry, Stop loss, Take profit, Lot size** — type, or press **Paste** to pull the value
    from the clipboard. Anything you paste is cleaned up: `$1,084.20`, `1.084,2`,
    `1.0842 USD` and `0.10 lots` all become plain numbers.
@@ -55,7 +60,8 @@ floored to the 0.01 increment. It is a convenience only — it never blocks send
 
 ## Permissions
 
-- `storage` — remembers the panel position, the last instrument/size, and the pending trade.
+- `storage` — remembers only the panel's drag position, plus the pending trade that is
+  waiting for the journal. No trade values are ever stored.
 - `activeTab` — used by the toolbar popup's **Test screenshot** button.
 - `<all_urls>` — required by `tabs.captureVisibleTab()`. Chrome only allows capture with
   either an `activeTab` grant (which dies when the tab navigates) or a host pattern that is
@@ -89,9 +95,10 @@ npm test
 
 `tests/lot-math.test.js` covers pasted-number parsing, instrument contract values and lot
 sizing. `tests/panel.test.js` loads the real content scripts into a DOM with a mocked
-`chrome` API and checks the panel floats in a shadow root, opens empty, cleans pasted
-values, retakes the screenshot, accepts an image URL, drags and remembers its position,
-and validates before sending. Without `jsdom` the DOM tests are skipped rather than failing.
+`chrome` API and checks the panel floats in a shadow root, opens with **no values from the
+previous trade** (both after closing and after sending), cleans pasted values, retakes the
+screenshot, accepts an image URL, drags and remembers only its position, and validates
+before sending. Without `jsdom` the DOM tests are skipped rather than failing.
 
 ## Notes and limits
 

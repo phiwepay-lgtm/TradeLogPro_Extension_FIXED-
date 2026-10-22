@@ -30,7 +30,8 @@
     'Scalp m5 HA VHB or VLB'
   ];
 
-  const LAST_USED_KEY = 'tlxLastUsed';
+  // Only the panel's drag position is remembered. The form itself always opens
+  // clean: no values carried over from a previous trade.
   const POSITION_KEY = 'tlxPanelPosition';
 
   const $ = (selector, root) => (root || document).querySelector(selector);
@@ -282,8 +283,7 @@
     if (!context) return;
     if (panel && panel.isConnected) return;
 
-    const stored = await chrome.storage.local.get([LAST_USED_KEY, POSITION_KEY]).catch(() => ({}));
-    const lastUsed = stored?.[LAST_USED_KEY] || {};
+    const stored = await chrome.storage.local.get(POSITION_KEY).catch(() => ({}));
     const savedPosition = stored?.[POSITION_KEY] || null;
 
     const now = new Date();
@@ -455,7 +455,6 @@
     const hint = field('tlx-hint');
 
     const close = () => {
-      saveLastUsed();
       element.remove();
       panel = null;
     };
@@ -581,21 +580,13 @@
     renderShot();
     if (captureError && !screenshot) errorBox.textContent = `Screenshot unavailable: ${captureError}`;
 
-    /* ----------------------------------------------------------- prefill */
+    /* --------------------------------------------------------------- start */
 
+    // A clean panel. Only things that describe *this* moment are set: the
+    // direction (from the double-click, else Long) and the current date/time.
+    // No trade values, sizes, prices, tags or screenshots are carried over.
     field('tlx-dir').value = direction === 'sell' ? 'sell' : 'buy';
     field('tlx-date').value = localDateTime(now);
-    field('tlx-symbol').value = lastUsed.symbol || '';
-    field('tlx-lots').value = lastUsed.lots || '';
-    field('tlx-balance').value = lastUsed.balance || '';
-    field('tlx-risk-pct').value = lastUsed.riskPercent || '';
-    field('tlx-outcome').value = lastUsed.outcome || '';
-    field('tlx-exec').value = lastUsed.exec || '';
-    field('tlx-bias').value = lastUsed.bias || '';
-    field('tlx-mgmt').value = lastUsed.mgmt || '';
-    field('tlx-session').value = lastUsed.sess || '';
-    field('tlx-emotion').value = lastUsed.emotion || '';
-    field('tlx-type').value = lastUsed.entryType || '';
 
     /* ----------------------------------------------------------- numbers */
 
@@ -704,25 +695,6 @@
 
     recalculate();
 
-    /* ------------------------------------------------------------ savings */
-
-    function saveLastUsed() {
-      const patch = {
-        symbol: field('tlx-symbol').value.trim(),
-        lots: field('tlx-lots').value,
-        balance: field('tlx-balance').value,
-        riskPercent: field('tlx-risk-pct').value,
-        outcome: field('tlx-outcome').value,
-        exec: field('tlx-exec').value,
-        bias: field('tlx-bias').value,
-        mgmt: field('tlx-mgmt').value,
-        sess: field('tlx-session').value,
-        emotion: field('tlx-emotion').value,
-        entryType: field('tlx-type').value
-      };
-      chrome.storage.local.set({ [LAST_USED_KEY]: patch }).catch(() => {});
-    }
-
     /* ---------------------------------------------------------------- send */
 
     field('tlx-cancel').addEventListener('click', close);
@@ -812,8 +784,6 @@
       trade.riskPercent = balance > 0 ? trade.riskAmount / balance * 100 : 0;
       trade.riskTargetPercent = Number(field('tlx-risk-pct').value) || 0;
       trade.riskBudget = balance > 0 ? balance * trade.riskTargetPercent / 100 : 0;
-
-      saveLastUsed();
 
       const result = await send({ type: 'save-trade-to-journal', trade });
       if (result?.stale) {
