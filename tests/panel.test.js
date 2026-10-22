@@ -14,15 +14,22 @@ const domTest = JSDOM ? test : test.skip;
 const root = path.join(__dirname, '..');
 const read = name => fs.readFileSync(path.join(root, name), 'utf8');
 
-function fakeChrome() {
+/**
+ * Mock worker. `otherFrames` simulates the Exness terminal's iframes: the
+ * background answers scan-tab with what chrome.scripting would collect.
+ */
+function fakeChrome(otherFrames = []) {
   const store = {};
   return {
     __store: store,
     runtime: {
       id: 'test-extension',
       lastError: undefined,
+      onMessage: { addListener() {} },
       sendMessage: async message => {
         if (message.type === 'capture-visible-tab') return { screenshot: 'data:image/jpeg;base64,AAAA' };
+        if (message.type === 'scan-tab') return { frames: otherFrames };
+        if (message.type === 'apply-lot') { store.__lotApplied = message.value; return { applied: 1 }; }
         if (message.type === 'save-trade-to-journal') { store.__saved = message.trade; return { ok: true, delivered: true }; }
         return { ok: true };
       }
@@ -37,10 +44,10 @@ function fakeChrome() {
   };
 }
 
-async function openPanel(html, { title = 'Exness Terminal' } = {}) {
+async function openPanel(html, { title = 'Exness Terminal', otherFrames = [] } = {}) {
   const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'https://my.exness.com/pa/trading/accounts' });
   const { window } = dom;
-  window.chrome = fakeChrome();
+  window.chrome = fakeChrome(otherFrames);
   // jsdom does not decode images; fail fast so the panel does not wait on the
   // compression fallback timer.
   window.Image = class { set src(_value) { setTimeout(() => this.onerror && this.onerror(), 0); } };
@@ -48,18 +55,28 @@ async function openPanel(html, { title = 'Exness Terminal' } = {}) {
   window.eval(read('trade-detect.js'));
   window.eval(read('exness.js'));
 
-  window.document.getElementById('tlx-launch').click();
+  const host = window.document.getElementById('tlx-shadow-host');
+  assert.ok(host, 'shadow host mounted in the top frame');
+  const shadow = host.shadowRoot;
+  shadow.querySelector('.tlx-launch').click();
 
   const deadline = Date.now() + 3000;
-  while (!window.document.getElementById('tlx-overlay') && Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 25));
+  while (!shadow.querySelector('.tlx-overlay') && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 20));
   }
-  const overlay = window.document.getElementById('tlx-overlay');
+  const overlay = shadow.querySelector('.tlx-overlay');
   assert.ok(overlay, 'review panel opened');
-  return { window, overlay };
+  return { window, overlay, shadow };
 }
 
 const field = (overlay, id) => overlay.querySelector('#' + id);
+
+domTest('the panel is rendered in a shadow root, not the page DOM', async () => {
+  const { window, overlay } = await openPanel(`<body></body>`);
+  assert.equal(window.document.querySelector('.tlx-overlay'), null, 'not in the page DOM');
+  assert.ok(overlay.getRootNode().host.id === 'tlx-shadow-host', 'rooted in the shadow host');
+  assert.equal(window.document.getElementById('tlx-lots'), null, 'page cannot see the fields');
+});
 
 domTest('the panel fills itself from a labelled order ticket', async () => {
   const { overlay } = await openPanel(`<body>
@@ -84,22 +101,64 @@ domTest('the panel fills itself from a labelled order ticket', async () => {
   // $50 risk / (0.0020 * 100,000) = 0.25 lots.
   assert.equal(Number(field(overlay, 'tlx-point-value').value), 100000);
   assert.equal(field(overlay, 'tlx-recommended-lot').textContent, '0.25');
-
   assert.match(overlay.querySelector('#tlx-detected').textContent, /Volume/);
 });
 
-domTest('a ticket without labels reports nothing instead of inventing values', async () => {
+domTest('a ticket living in another frame is still detected', async () => {
+  // The chart is in this document; the order ticket is in an iframe the worker
+  // reached with chrome.scripting.
+  const ticketFrame = {
+    url: 'https://my.exness.com/widgets/order-ticket',
+    scanned: 6,
+    symbol: 'XAU/USD',
+    direction: 'buy',
+    textAmount: null,
+    empty: [],
+    fields: {
+      lots: [{ value: 0.1, raw: '0.10', label: 'Volume', source: 'label', roles: ['lots'] }],
+      entry: [{ value: 2400, raw: '2400', label: 'Entry price', source: 'label', roles: ['entry'] }],
+      sl: [{ value: 2395, raw: '2395', label: 'Stop Loss', source: 'label', roles: ['sl'] }],
+      tp: [{ value: 2412, raw: '2412', label: 'Take Profit', source: 'label', roles: ['tp'] }],
+      balance: [{ value: 10000, raw: '10,000', label: 'Account balance', source: 'label', roles: ['balance'] }],
+      riskPct: [{ value: 1, raw: '1', label: 'Risk %', source: 'label', roles: ['riskPct'] }],
+      amount: [], price: []
+    }
+  };
+
+  const { overlay } = await openPanel(`<body><div id="chart">chart only</div></body>`, { otherFrames: [ticketFrame] });
+
+  assert.equal(Number(field(overlay, 'tlx-lots').value), 0.1);
+  assert.equal(Number(field(overlay, 'tlx-entry').value), 2400);
+  assert.equal(field(overlay, 'tlx-symbol').value, 'XAU/USD');
+  assert.match(field(overlay, 'tlx-detected').textContent, /across 2 frames/);
+
+  // Gold: $100 risk / ($5 stop * $100 per 1.0) = 0.2 lots.
+  assert.equal(field(overlay, 'tlx-recommended-lot').textContent, '0.2');
+});
+
+domTest('unlabelled controls are reported, never guessed', async () => {
   const { overlay } = await openPanel(`<body>
     <div><input value="1.0850"><input value="0.10"></div>
   </body>`);
 
   assert.equal(field(overlay, 'tlx-lots').value, '');
   assert.equal(field(overlay, 'tlx-entry').value, '');
-  assert.match(overlay.querySelector('#tlx-detected').textContent, /nothing labelled/i);
+  const text = overlay.querySelector('#tlx-detected').textContent;
+  assert.match(text, /none are labelled/i);
+  assert.match(text, /2 controls/);
+});
+
+domTest('a chart-only page tells the user to open the order tool', async () => {
+  // This is the "Scanned: 0 controls" case from the field report.
+  const { overlay } = await openPanel(`<body><div id="chart">chart only</div></body>`);
+
+  const text = overlay.querySelector('#tlx-detected').textContent;
+  assert.match(text, /No trade panel found/i);
+  assert.match(text, /Open the Long Position or Short Position tool/i);
 });
 
 domTest('sending blocks when the risk engine cannot size the trade', async () => {
-  const { overlay, window } = await openPanel(`<body>
+  const { overlay } = await openPanel(`<body>
     <label for="vol">Volume</label><input id="vol" value="0.10">
     <label for="entry">Entry</label><input id="entry" value="1.0850">
     <label for="sl">SL</label><input id="sl" value="1.0830">
@@ -112,11 +171,11 @@ domTest('sending blocks when the risk engine cannot size the trade', async () =>
   const error = overlay.querySelector('#tlx-form-error').textContent;
   assert.match(error, /Risk size cannot be verified/);
   assert.match(error, /balance/i);
-  assert.equal(window.document.getElementById('tlx-overlay'), overlay, 'panel stays open');
+  assert.ok(overlay.isConnected, 'panel stays open');
 });
 
 domTest('changing the instrument re-derives the contract value', async () => {
-  const { overlay } = await openPanel(`<body>
+  const { overlay, window } = await openPanel(`<body>
     <label for="vol">Volume</label><input id="vol" value="0.10">
     <label for="entry">Entry</label><input id="entry" value="1.0850">
     <label for="sl">SL</label><input id="sl" value="1.0830">
@@ -127,7 +186,7 @@ domTest('changing the instrument re-derives the contract value', async () => {
 
   const symbolInput = field(overlay, 'tlx-symbol');
   symbolInput.value = 'XAU/USD';
-  symbolInput.dispatchEvent(new overlay.ownerDocument.defaultView.Event('change', { bubbles: true }));
+  symbolInput.dispatchEvent(new window.Event('change', { bubbles: true }));
   await new Promise(resolve => setTimeout(resolve, 60));
 
   assert.equal(Number(field(overlay, 'tlx-point-value').value), 100);
@@ -144,11 +203,10 @@ domTest('a fully reviewed trade is handed to the background worker', async () =>
     <label for="rp">Risk %</label><input id="rp" value="1">
   </body>`, { title: 'EUR/USD · Exness' });
 
-  const Event = window.Event;
   const choose = (id, value) => {
     const el = field(overlay, id);
     el.value = value;
-    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new window.Event('change', { bubbles: true }));
   };
 
   choose('tlx-exec', 'VHB + Engulf Trigger');
@@ -174,5 +232,22 @@ domTest('a fully reviewed trade is handed to the background worker', async () =>
   assert.equal(saved.riskBudget, 50);
   assert.ok(saved.screenshot.startsWith('data:image'));
   assert.match(saved.externalId, /\w+/);
-  assert.equal(window.document.getElementById('tlx-overlay'), null, 'panel closed');
+  assert.equal(overlay.isConnected, false, 'panel closed');
+});
+
+domTest('"Use recommended lot" asks the worker to apply it in every frame', async () => {
+  const { overlay, window } = await openPanel(`<body>
+    <label for="vol">Volume</label><input id="vol" value="1.00">
+    <label for="entry">Entry</label><input id="entry" value="1.0850">
+    <label for="sl">SL</label><input id="sl" value="1.0830">
+    <label for="tp">TP</label><input id="tp" value="1.0910">
+    <label for="bal">Account balance</label><input id="bal" value="5000">
+    <label for="rp">Risk %</label><input id="rp" value="1">
+  </body>`, { title: 'EUR/USD · Exness' });
+
+  overlay.querySelector('.tlx-apply').click();
+  await new Promise(resolve => setTimeout(resolve, 60));
+
+  assert.equal(window.chrome.__store.__lotApplied, 0.25);
+  assert.equal(field(overlay, 'tlx-lots').value, '0.25');
 });

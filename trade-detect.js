@@ -568,6 +568,73 @@
     };
   }
 
+
+  /* ------------------------------------------------------------ frame merge */
+
+  const ROLES = ['entry', 'sl', 'tp', 'lots', 'balance', 'riskPct', 'amount', 'price'];
+
+  /** Strip DOM references so a frame's findings can be sent over messaging. */
+  function serialiseFields(fields) {
+    const out = {};
+    for (const role of ROLES) {
+      out[role] = (fields?.[role] || []).map(item => ({
+        value: item.value,
+        raw: item.raw,
+        label: item.label,
+        source: item.source,
+        roles: item.roles || []
+      }));
+    }
+    return out;
+  }
+
+  /**
+   * Merge per-frame scans into one scan.
+   * The Exness terminal splits the chart and the order ticket across frames, so
+   * no single document holds everything. Later frames never overwrite earlier
+   * findings; duplicates are dropped so the ranking in best() stays honest.
+   */
+  function mergeScans(payloads) {
+    const frames = (payloads || []).filter(Boolean);
+    const fields = {};
+    for (const role of ROLES) fields[role] = [];
+
+    let scanned = 0;
+    let emptyTotal = 0;
+    let symbol = '';
+    let direction = '';
+    let textAmount = null;
+
+    for (const frame of frames) {
+      scanned += Number(frame.scanned) || 0;
+      emptyTotal += (frame.empty || []).length;
+      if (!symbol && frame.symbol) symbol = frame.symbol;
+      if (!direction && frame.direction) direction = frame.direction;
+      if (textAmount === null && Number(frame.textAmount) > 0) textAmount = Number(frame.textAmount);
+
+      for (const role of ROLES) {
+        for (const item of frame.fields?.[role] || []) {
+          const key = `${item.label}|${item.value}|${item.source}`;
+          if (fields[role].some(existing => `${existing.label}|${existing.value}|${existing.source}` === key)) continue;
+          fields[role].push(item);
+        }
+      }
+    }
+
+    return { fields, scanned, emptyTotal, symbol, direction, textAmount, frames: frames.length };
+  }
+
+  /** Re-attach the live DOM node to whichever merged item came from this frame. */
+  function attachLocalInputs(merged, localFields) {
+    const local = localFields?.lots || [];
+    for (const item of merged.lots || []) {
+      if (item.input) continue;
+      const match = local.find(candidate => candidate.label === item.label && candidate.value === item.value);
+      if (match?.input) item.input = match.input;
+    }
+    return merged;
+  }
+
   return {
     parseNumber,
     parsePositive,
@@ -584,6 +651,10 @@
     resolveTrade,
     describeDetection,
     recommendLots,
+    serialiseFields,
+    mergeScans,
+    attachLocalInputs,
+    ROLES,
     SYMBOLS
   };
 });

@@ -3,6 +3,7 @@
   window.__tradeLogExnessInstalled = true;
 
   const D = window.TLXDetect || null;
+  const isTopFrame = (() => { try { return window.top === window; } catch { return false; } })();
 
   const entryTypes = [
     'BT 0.382',
@@ -123,21 +124,98 @@
     return null;
   }
 
-  function scanPanel(direction) {
-    const empty = { fields: { entry: [], sl: [], tp: [], lots: [], balance: [], riskPct: [], amount: [], price: [] }, empty: [], scanned: 0 };
+  /** Local scan keeping live DOM nodes (used for the lot input we can type into). */
+  function localScan(direction) {
+    const empty = { fields: {}, empty: [], scanned: 0 };
     const scan = D ? D.collectFields(document) : empty;
-    const symbol = symbolFromPage();
-    const dir = direction || detectDirection('');
+    return {
+      fields: scan.fields,
+      empty: scan.empty,
+      scanned: scan.scanned,
+      symbol: symbolFromPage(),
+      direction: direction || detectDirection(''),
+      textAmount: scrapeTextAmount()
+    };
+  }
 
-    const resolved = D
-      ? D.resolveTrade(scan.fields, dir, symbol, { textAmount: scrapeTextAmount() })
+  /**
+   * Serialisable snapshot of this frame, callable from the background worker via
+   * chrome.scripting in every frame. This is what makes detection independent of
+   * which frame happens to hold the order ticket.
+   */
+  window.__tlxScan = () => {
+    const scan = localScan('');
+    return {
+      url: location.href,
+      fields: D ? D.serialiseFields(scan.fields) : {},
+      empty: (scan.empty || []).map(item => ({ label: item.label, source: item.source })),
+      scanned: scan.scanned,
+      symbol: scan.symbol,
+      direction: scan.direction,
+      textAmount: scan.textAmount
+    };
+  };
+
+  /** Applied by the background worker when "Use recommended lot" is pressed. */
+  window.__tlxApplyLot = (label, value) => {
+    if (!D) return false;
+    const { fields } = D.collectFields(document);
+    const candidates = fields.lots || [];
+    const target = candidates.find(item => !label || item.label === label) || candidates[0];
+    if (!target?.input) return false;
+
+    try {
+      const input = target.input;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (setter) setter.call(input, String(value));
+      else input.value = String(value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** Merge this frame with every other frame the worker can reach. */
+  async function scanEveryFrame(direction) {
+    const local = localScan(direction);
+    const localPayload = {
+      url: location.href,
+      fields: D ? D.serialiseFields(local.fields) : {},
+      empty: (local.empty || []).map(item => ({ label: item.label, source: item.source })),
+      scanned: local.scanned,
+      symbol: local.symbol,
+      direction: local.direction,
+      textAmount: local.textAmount
+    };
+
+    const reply = await send({ type: 'scan-tab' });
+    const remote = Array.isArray(reply?.frames) ? reply.frames : [];
+
+    const merged = D
+      ? D.mergeScans([localPayload, ...remote.filter(frame => frame && frame.url !== location.href)])
       : {
-        direction: dir, entry: null, sl: null, tp: null, lots: null, balance: null, riskPercent: null,
-        stopAmount: null, distance: null, pointValue: null, pointValueSource: 'none',
-        pointValueAssumed: false, pointValueNote: '', sources: {}, lotInput: null
+        fields: local.fields, scanned: local.scanned, emptyTotal: (local.empty || []).length,
+        symbol: local.symbol, direction: local.direction, textAmount: local.textAmount, frames: 1
       };
 
-    return { resolved, fields: scan.fields, empty: scan.empty, scanned: scan.scanned, symbol };
+    if (D) D.attachLocalInputs(merged, local.fields);
+
+    const resolved = D
+      ? D.resolveTrade(merged.fields, direction || merged.direction || '', merged.symbol, { textAmount: merged.textAmount })
+      : {
+        direction: direction || '', entry: null, sl: null, tp: null, lots: null, balance: null,
+        riskPercent: null, stopAmount: null, distance: null, pointValue: null,
+        pointValueSource: 'none', pointValueAssumed: false, pointValueNote: '', sources: {}, lotInput: null
+      };
+
+    return {
+      merged,
+      resolved,
+      empty: local.empty || [],
+      framesSeen: 1 + remote.filter(frame => frame && frame.url !== location.href).length
+    };
   }
 
   function riskKeyFor(symbol) {
@@ -210,48 +288,6 @@
     return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   }
 
-  function injectStyles() {
-    if ($('#tlx-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'tlx-styles';
-    style.textContent = `
-      #tlx-launch{position:fixed;z-index:2147483646;right:18px;bottom:18px;border:0;border-radius:999px;padding:12px 17px;background:#385bff;color:#fff;font:600 13px system-ui;box-shadow:0 5px 24px #0008;cursor:pointer}
-      #tlx-overlay{position:fixed;inset:0;z-index:2147483647;background:#060914c9;display:grid;place-items:center;padding:12px;font:14px system-ui;color:#f3f5ff}
-      #tlx-modal{width:min(680px,97vw);max-height:96vh;overflow:auto;background:#131722;border:1px solid #39445d;border-radius:14px;padding:18px;box-shadow:0 20px 80px #000b}
-      #tlx-modal h2{font-size:18px;margin:0 0 5px} #tlx-modal p{color:#aeb8cc;font-size:11px;line-height:1.45;margin:4px 0 10px}
-      #tlx-modal img{width:100%;max-height:190px;object-fit:contain;background:#080b12;border-radius:8px;margin:4px 0 9px}
-      #tlx-modal .tlx-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 10px}
-      #tlx-modal label{display:block;color:#aeb8cc;font-size:10px;margin:7px 0 3px}
-      #tlx-modal input,#tlx-modal select{box-sizing:border-box;width:100%;padding:8px;border:1px solid #343b4c;border-radius:7px;background:#1c2230;color:#fff;font:12px system-ui}
-      #tlx-modal input[readonly]{color:#aeb8cc}
-      #tlx-modal .tlx-detected{margin:8px 0;padding:8px 10px;border-radius:8px;background:#0f1725;border:1px dashed #35435c;color:#9fb2d4;font:10.5px/1.5 system-ui;word-break:break-word}
-      #tlx-modal .tlx-detected b{color:#c9d7f2}
-      #tlx-modal .tlx-meta{color:#84a9ff;font-size:10px;margin:6px 0}
-      #tlx-modal .tlx-risk{margin:10px 0;padding:11px;background:#101a2a;border:1px solid #34445f;border-radius:10px}
-      #tlx-modal .tlx-risk h3{font-size:13px;margin:0 0 6px;color:#9db8ff}
-      #tlx-modal .tlx-risk-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-      #tlx-modal .tlx-risk-output{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:9px 0;color:#c5cee0;font-size:11px}
-      #tlx-modal .tlx-risk-output b{font-size:13px;color:#a4f0c7}
-      #tlx-modal .tlx-risk-buttons{display:flex;gap:8px;flex-wrap:wrap}
-      #tlx-modal .tlx-apply,#tlx-modal .tlx-rescan{background:#243551;color:#e7edff;border:1px solid #536b91!important;padding:7px 10px!important;font-size:11px}
-      #tlx-modal .tlx-actions{display:flex;gap:8px;margin-top:12px} #tlx-modal button{border:0;border-radius:8px;padding:10px 14px;font:600 12px system-ui;cursor:pointer}
-      #tlx-modal .tlx-save{flex:1;background:linear-gradient(90deg,#3264ff,#754cff);color:#fff} #tlx-modal .tlx-cancel{background:#252c3b;color:#ddd}
-      #tlx-modal .tlx-error{color:#ff7d8e;min-height:15px;font-size:11px;margin-top:5px}
-      #tlx-modal .tlx-warn{color:#ffcb76;font-size:10.5px;margin:4px 0}
-      #tlx-modal .tlx-badge{display:inline-block;padding:1px 6px;border-radius:999px;font-size:9px;margin-left:4px;background:#3a2f12;color:#ffcb76;border:1px solid #6b5520}
-      @media(max-width:560px){#tlx-modal .tlx-grid{grid-template-columns:1fr 1fr}#tlx-modal .tlx-risk-grid{grid-template-columns:1fr 1fr}#tlx-modal{padding:14px}}
-    `;
-    document.documentElement.append(style);
-  }
-
-  function selectOptions(values, placeholder) {
-    return `<option value="">${placeholder}</option>${values.map(item => {
-      const value = typeof item === 'string' ? item : item.value;
-      const label = typeof item === 'string' ? item : item.label;
-      return `<option value="${value}">${label}</option>`;
-    }).join('')}`;
-  }
-
   /** crypto.randomUUID is missing in some embedded webviews; always return an id. */
   function newId() {
     try {
@@ -266,28 +302,124 @@
     }[character]));
   }
 
+  function selectOptions(values, placeholder) {
+    return `<option value="">${placeholder}</option>${values.map(item => {
+      const value = typeof item === 'string' ? item : item.value;
+      const label = typeof item === 'string' ? item : item.label;
+      return `<option value="${value}">${label}</option>`;
+    }).join('')}`;
+  }
+
+  /* ------------------------------------------------------------ shadow UI */
+
+  /**
+   * The panel lives in an open shadow root attached to the top frame. Two
+   * reasons: position:fixed then covers the browser window instead of being
+   * clipped inside whichever frame raised it, and the terminal's stylesheet
+   * cannot reach the inputs (it was blocking typing).
+   *
+   * `all: initial` on :host stops page inheritance (font-size, pointer-events,
+   * user-select) from leaking in.
+   */
+  const STYLE = `
+    :host{all:initial}
+    .tlx-launch{position:fixed;right:18px;bottom:18px;z-index:2;border:0;border-radius:999px;padding:12px 17px;background:#385bff;color:#fff;font:600 13px/1.2 system-ui,sans-serif;box-shadow:0 5px 24px #0008;cursor:pointer;pointer-events:auto}
+    .tlx-overlay{position:fixed;inset:0;z-index:10;background:#060914c9;display:grid;place-items:center;padding:14px;font:14px/1.45 system-ui,sans-serif;color:#f3f5ff;pointer-events:auto;overflow:auto}
+    .tlx-modal{width:min(680px,97vw);max-height:min(94vh,900px);overflow:auto;background:#131722;border:1px solid #39445d;border-radius:14px;padding:18px;box-shadow:0 20px 80px #000b;box-sizing:border-box}
+    .tlx-modal *{box-sizing:border-box}
+    .tlx-modal h2{font-size:18px;margin:0 0 5px;color:#fff}
+    .tlx-modal p{color:#aeb8cc;font-size:11px;line-height:1.45;margin:4px 0 10px}
+    .tlx-modal img{width:100%;max-height:190px;object-fit:contain;background:#080b12;border-radius:8px;margin:4px 0 9px}
+    .tlx-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 10px}
+    .tlx-modal label{display:block;color:#aeb8cc;font-size:10px;margin:7px 0 3px}
+    .tlx-modal input,.tlx-modal select{display:block;width:100%;padding:8px;border:1px solid #343b4c;border-radius:7px;background:#1c2230;color:#fff;font:12px/1.4 system-ui,sans-serif;pointer-events:auto;user-select:text}
+    .tlx-modal input:focus,.tlx-modal select:focus{outline:2px solid #4d7cff;outline-offset:1px}
+    .tlx-modal input[readonly]{color:#aeb8cc}
+    .tlx-detected{margin:8px 0;padding:8px 10px;border-radius:8px;background:#0f1725;border:1px dashed #35435c;color:#9fb2d4;font:10.5px/1.5 system-ui,sans-serif;word-break:break-word}
+    .tlx-detected b{color:#c9d7f2}
+    .tlx-meta{color:#84a9ff;font-size:10px;margin:6px 0}
+    .tlx-risk{margin:10px 0;padding:11px;background:#101a2a;border:1px solid #34445f;border-radius:10px}
+    .tlx-risk h3{font-size:13px;margin:0 0 6px;color:#9db8ff}
+    .tlx-risk-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+    .tlx-risk-output{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:9px 0;color:#c5cee0;font-size:11px}
+    .tlx-risk-output b{font-size:13px;color:#a4f0c7}
+    .tlx-risk-buttons{display:flex;gap:8px;flex-wrap:wrap}
+    .tlx-modal button{border:0;border-radius:8px;padding:10px 14px;font:600 12px system-ui,sans-serif;cursor:pointer;color:#e7edff}
+    .tlx-apply,.tlx-rescan{background:#243551;border:1px solid #536b91;padding:7px 10px;font-size:11px}
+    .tlx-actions{display:flex;gap:8px;margin-top:12px}
+    .tlx-save{flex:1;background:linear-gradient(90deg,#3264ff,#754cff);color:#fff}
+    .tlx-cancel{background:#252c3b;color:#ddd}
+    .tlx-error{color:#ff7d8e;min-height:15px;font-size:11px;margin-top:5px}
+    .tlx-warn{color:#ffcb76;font-size:10.5px;margin:4px 0}
+    .tlx-badge{display:inline-block;padding:1px 6px;border-radius:999px;font-size:9px;margin-left:4px;background:#3a2f12;color:#ffcb76;border:1px solid #6b5520}
+    @media(max-width:560px){.tlx-grid{grid-template-columns:1fr 1fr}.tlx-risk-grid{grid-template-columns:1fr 1fr}.tlx-modal{padding:14px}}
+  `;
+
+  let ui = null;
+  let panel = null;
+
+  function ensureUi() {
+    if (!isTopFrame) return null;
+    if (ui && ui.host.isConnected) return ui;
+
+    const host = document.createElement('div');
+    host.id = 'tlx-shadow-host';
+    host.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none';
+    // A shadow host with pointer-events:none must not swallow the page; its
+    // children opt back in individually.
+    (document.body || document.documentElement).append(host);
+
+    const root = host.attachShadow({ mode: 'open' });
+    const style = document.createElement('style');
+    style.textContent = STYLE;
+    root.append(style);
+
+    ui = { host, root };
+    return ui;
+  }
+
+  function renderLauncher() {
+    const context = ensureUi();
+    if (!context) return;
+    if ($('.tlx-launch', context.root)) return;
+
+    const launcher = document.createElement('button');
+    launcher.type = 'button';
+    launcher.className = 'tlx-launch';
+    launcher.textContent = '＋ Log trade';
+    launcher.addEventListener('click', () => openTrade(''));
+    context.root.append(launcher);
+  }
+
   /* ------------------------------------------------------------- the panel */
 
   async function openTrade(direction = '') {
-    if ($('#tlx-overlay')) return;
+    if (!isTopFrame) {
+      // A child frame (chart tool) asked for the panel: let the top frame render it.
+      await send({ type: 'open-trade-panel', direction });
+      return;
+    }
 
-    await sleep(150);
+    const context = ensureUi();
+    if (!context) return;
+    if (panel && panel.isConnected) return;
 
-    let scan = scanPanel(direction);
-    let symbol = scan.symbol;
-    let point = await choosePointValue(scan.resolved, symbol);
+    await sleep(120);
+
+    let scan = await scanEveryFrame(direction);
+    let symbol = scan.merged.symbol || symbolFromPage();
     let resolved = scan.resolved;
+    let point = await choosePointValue(resolved, symbol);
 
     const capture = await send({ type: 'capture-visible-tab' });
     const screenshot = capture?.screenshot ? await compressShot(capture.screenshot) : '';
 
     const now = new Date();
-    injectStyles();
 
     const overlay = document.createElement('div');
-    overlay.id = 'tlx-overlay';
+    overlay.className = 'tlx-overlay';
     overlay.innerHTML = `
-      <section id="tlx-modal" role="dialog" aria-modal="true" aria-label="Review trade details">
+      <section class="tlx-modal" role="dialog" aria-modal="true" aria-label="Review trade details">
         <h2>Log Exness trade</h2>
         <p>Values are read from the open order panel. Everything below stays editable — confirm it, then send.</p>
         ${screenshot ? `<img src="${screenshot}" alt="Trade chart capture">` : `<div class="tlx-error">Screenshot unavailable. ${escapeHtml(capture?.error || 'Chrome did not return an image.')}</div>`}
@@ -338,9 +470,16 @@
       </section>
     `;
 
-    document.body.append(overlay);
+    context.root.append(overlay);
+    panel = overlay;
+
+    // The terminal binds global hotkeys; keep typing inside the panel.
+    ['keydown', 'keyup', 'keypress'].forEach(type => {
+      overlay.addEventListener(type, event => event.stopPropagation(), true);
+    });
 
     const field = id => $('#' + id, overlay);
+    const close = () => { overlay.remove(); panel = null; };
 
     const riskCalculation = () => {
       const balance = Number(field('tlx-balance').value);
@@ -364,17 +503,25 @@
     const refreshSummary = () => {
       const bits = [];
       const summary = D ? D.describeDetection(resolved) : '';
-      if (summary) bits.push(`<b>Detected:</b> ${escapeHtml(summary)}`);
-      else bits.push('<b>Detected:</b> nothing labelled — enter the values by hand.');
+
+      if (summary) {
+        bits.push(`<b>Detected:</b> ${escapeHtml(summary)}`);
+      } else if (scan.merged.scanned === 0) {
+        bits.push('<b>No trade panel found.</b> Open the Long Position or Short Position tool so the '
+          + 'order ticket is on screen, then press <b>Rescan order panel</b>.');
+      } else {
+        bits.push('<b>Detected:</b> controls are present but none are labelled Entry / SL / TP / Volume — enter the values by hand.');
+      }
 
       const pv = Number(field('tlx-point-value').value);
       if (pv > 0) {
         const sourceText = point.source === 'measured' ? 'measured from this ticket'
           : point.source === 'saved' ? 'your saved value'
-          : point.assumed ? 'typical contract size' : 'contract size';
+            : point.assumed ? 'typical contract size' : 'contract size';
         bits.push(`<b>Contract value:</b> ${pv} per 1.0 move per lot (${escapeHtml(sourceText)})`);
       }
-      bits.push(`<b>Scanned:</b> ${scan.scanned} controls${scan.empty.length ? `, ${scan.empty.length} labelled but empty` : ''}`);
+      bits.push(`<b>Scanned:</b> ${scan.merged.scanned} controls across ${scan.framesSeen} frame${scan.framesSeen === 1 ? '' : 's'}`
+        + `${scan.merged.emptyTotal ? `, ${scan.merged.emptyTotal} labelled but empty` : ''}`);
       field('tlx-detected').innerHTML = bits.join('<br>');
 
       field('tlx-pv-badge').innerHTML = point.assumed ? '<span class="tlx-badge">assumed</span>' : '';
@@ -421,9 +568,11 @@
     });
 
     $('.tlx-rescan', overlay).onclick = async () => {
-      scan = scanPanel(field('tlx-dir').value === 'sell' ? 'sell' : 'buy');
+      scan = await scanEveryFrame(field('tlx-dir').value === 'sell' ? 'sell' : 'buy');
       resolved = scan.resolved;
-      symbol = scan.symbol || field('tlx-symbol').value.trim();
+      symbol = scan.merged.symbol || field('tlx-symbol').value.trim();
+      const keepSymbol = field('tlx-symbol').value.trim();
+      if (keepSymbol) symbol = keepSymbol;
       point = await choosePointValue(resolved, symbol);
       fill();
       refreshSummary();
@@ -431,7 +580,7 @@
       field('tlx-form-error').textContent = '';
     };
 
-    $('.tlx-apply', overlay).onclick = () => {
+    $('.tlx-apply', overlay).onclick = async () => {
       const risk = riskCalculation();
       const error = field('tlx-form-error');
       error.textContent = '';
@@ -444,34 +593,43 @@
       const recommended = String(risk.suggested);
       field('tlx-lots').value = recommended;
 
-      const lotInput = resolved.lotInput;
-      if (lotInput && lotInput.isConnected) {
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-        if (setter) setter.call(lotInput, recommended);
-        else lotInput.value = recommended;
-        lotInput.dispatchEvent(new Event('input', { bubbles: true }));
-        lotInput.dispatchEvent(new Event('change', { bubbles: true }));
-        field('tlx-risk-note').textContent = 'Suggested size copied to the active trade tool. No order is placed.';
-      } else {
-        field('tlx-risk-note').textContent = 'Suggested size copied here. Type the same size in the trade tool; no order is placed.';
+      // The lot input may live in another frame, so ask the worker to apply it
+      // everywhere; fall back to the local node when scripting is unavailable.
+      let applied = 0;
+      const reply = await send({ type: 'apply-lot', value: risk.suggested, label: resolved.sources?.lots || '' });
+      applied = Number(reply?.applied) || 0;
+
+      if (!applied && resolved.lotInput?.isConnected) {
+        try {
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+          if (setter) setter.call(resolved.lotInput, recommended);
+          else resolved.lotInput.value = recommended;
+          resolved.lotInput.dispatchEvent(new Event('input', { bubbles: true }));
+          resolved.lotInput.dispatchEvent(new Event('change', { bubbles: true }));
+          applied = 1;
+        } catch { /* ignore */ }
       }
+
+      field('tlx-risk-note').textContent = applied
+        ? 'Suggested size copied to the active trade tool. No order is placed.'
+        : 'Suggested size copied here. Type the same size in the trade tool; no order is placed.';
     };
 
-    $('.tlx-cancel', overlay).onclick = () => overlay.remove();
-    overlay.addEventListener('click', event => { if (event.target === overlay) overlay.remove(); });
+    $('.tlx-cancel', overlay).onclick = close;
+    overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
 
     $('.tlx-save', overlay).onclick = async () => {
       const error = field('tlx-form-error');
       error.textContent = '';
 
       const risk = riskCalculation();
-      const direction = field('tlx-dir').value;
+      const directionValue = field('tlx-dir').value;
       const dateInput = field('tlx-date').value;
 
       const trade = {
         externalId: newId(),
         symbol: field('tlx-symbol').value.trim(),
-        dir: direction,
+        dir: directionValue,
         entry: Number(field('tlx-entry').value),
         sl: Number(field('tlx-sl').value),
         tp: Number(field('tlx-tp').value),
@@ -511,11 +669,11 @@
         return;
       }
 
-      const wrongSide = direction === 'buy'
+      const wrongSide = directionValue === 'buy'
         ? !(trade.sl < trade.entry && trade.tp > trade.entry)
         : !(trade.sl > trade.entry && trade.tp < trade.entry);
       if (wrongSide) {
-        error.textContent = `Stop loss and take profit sit on the wrong side for a ${direction === 'buy' ? 'long' : 'short'} trade. Fix them, or switch the direction.`;
+        error.textContent = `Stop loss and take profit sit on the wrong side for a ${directionValue === 'buy' ? 'long' : 'short'} trade. Fix them, or switch the direction.`;
         return;
       }
 
@@ -539,7 +697,7 @@
         return;
       }
 
-      overlay.remove();
+      close();
       if (result?.opened) showToast('Trade sent. TradeLog Pro opened in a new tab.');
       else if (result?.delivered === false) showToast(result.reason || 'Trade saved; the journal tab will pick it up on reload.');
       else showToast('Trade sent to TradeLog Pro.');
@@ -547,10 +705,12 @@
   }
 
   function showToast(text) {
+    const context = ensureUi();
+    if (!context) return;
     const toast = document.createElement('div');
     toast.textContent = text;
-    toast.style.cssText = 'position:fixed;z-index:2147483647;right:18px;bottom:72px;max-width:340px;background:#18243a;color:#fff;border:1px solid #445779;border-radius:9px;padding:12px 15px;font:13px system-ui;box-shadow:0 6px 24px #0008';
-    document.body.append(toast);
+    toast.style.cssText = 'position:fixed;right:18px;bottom:72px;max-width:340px;z-index:2147483647;background:#18243a;color:#fff;border:1px solid #445779;border-radius:9px;padding:12px 15px;font:13px system-ui;box-shadow:0 6px 24px #0008;pointer-events:auto';
+    context.root.append(toast);
     setTimeout(() => toast.remove(), 6000);
   }
 
@@ -570,17 +730,26 @@
     return '';
   }
 
-  injectStyles();
+  /* ----------------------------------------------------------------- boot */
 
-  const launcher = document.createElement('button');
-  launcher.id = 'tlx-launch';
-  launcher.type = 'button';
-  launcher.textContent = '＋ Log trade';
-  launcher.onclick = () => openTrade();
-  document.body.append(launcher);
+  if (isTopFrame) {
+    renderLauncher();
+  }
 
+  // Double-clicking the Long/Short tool may happen in any frame; whichever frame
+  // sees it asks the top frame to render the panel.
   document.addEventListener('dblclick', event => {
     const direction = directionFromTarget(event.target);
     if (direction) openTrade(direction);
   }, true);
+
+  // The top frame is the only one that renders; it receives open requests from
+  // child frames via the background worker.
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type !== 'open-trade-panel') return false;
+    if (!isTopFrame) return false;
+    openTrade(message.direction || '');
+    sendResponse?.({ ok: true });
+    return false;
+  });
 })();
