@@ -90,7 +90,9 @@ function completeBasics(window, panel) {
   setValue(window, field(panel, 'tlx-sl'), '1.0830');
   setValue(window, field(panel, 'tlx-tp'), '1.0910');
   setValue(window, field(panel, 'tlx-lots'), '0.10');
+  setValue(window, field(panel, 'tlx-exit'), '1.0910'); // closed at the target
   field(panel, 'tlx-outcome').value = 'win';
+  field(panel, 'tlx-outcome').dispatchEvent(new window.Event('change', { bubbles: true }));
 }
 
 /* ---------------------------------------------------------------- the panel */
@@ -213,6 +215,95 @@ domTest('a reviewed trade is sent with the screenshot attached', async () => {
   assert.ok(saved.screenshot.startsWith('data:image'));
   assert.equal(saved.screenshotUrl, '');
   assert.ok(Math.abs(saved.rewardRisk - 3) < 1e-9, '20 pip stop, 60 pip target = 3R');
+  assert.equal(saved.exit, 1.091, 'exit price travels with the trade');
+  assert.ok(Math.abs(saved.riskAmount - 20) < 1e-9, '0.1 lot over a 20 pip stop = $20 risk');
+  assert.ok(Math.abs(saved.pnl - 60) < 1e-9, '0.1 lot over 60 pips = +$60');
+  assert.ok(Math.abs(saved.r - 3) < 1e-9, 'the result is 3R');
+  assert.equal(saved.status, 'Full TP');
+  assert.ok(saved.closedAt, 'closure timestamp travels too');
+});
+
+domTest('a closed trade without an exit price is refused', async () => {
+  const { window, panel } = await openPanel();
+  setValue(window, field(panel, 'tlx-symbol'), 'EUR/USD');
+  setValue(window, field(panel, 'tlx-entry'), '1.0850');
+  setValue(window, field(panel, 'tlx-sl'), '1.0830');
+  setValue(window, field(panel, 'tlx-tp'), '1.0910');
+  setValue(window, field(panel, 'tlx-lots'), '0.10');
+  field(panel, 'tlx-outcome').value = 'win';
+
+  panel.querySelector('#tlx-send').click();
+  await new Promise(resolve => setTimeout(resolve, 40));
+
+  assert.match(field(panel, 'tlx-error').textContent, /Enter the exit price/i);
+  assert.equal(window.chrome.__store.__saved, undefined, 'nothing sent as a half-journalled trade');
+});
+
+domTest('an exit on the wrong side of a declared win is refused', async () => {
+  const { window, panel } = await openPanel();
+  completeBasics(window, panel);
+  setValue(window, field(panel, 'tlx-exit'), '1.0800'); // below entry on a long
+
+  panel.querySelector('#tlx-send').click();
+  await new Promise(resolve => setTimeout(resolve, 40));
+
+  assert.match(field(panel, 'tlx-error').textContent, /not beyond entry/i);
+  assert.equal(window.chrome.__store.__saved, undefined);
+});
+
+domTest('a pending trade is open: no exit, no P&L, status Open', async () => {
+  const { window, panel } = await openPanel();
+  completeBasics(window, panel);
+  setValue(window, field(panel, 'tlx-exit'), '');
+  field(panel, 'tlx-outcome').value = 'pending';
+  panel.querySelector('#tlx-send').click();
+  await new Promise(resolve => setTimeout(resolve, 80));
+
+  const saved = window.chrome.__store.__saved;
+  assert.ok(saved, 'an open trade still sends without an exit');
+  assert.equal(saved.exit, 0);
+  assert.equal(saved.pnl, 0);
+  assert.equal(saved.r, 0);
+  assert.equal(saved.status, 'Open');
+});
+
+domTest('the close reason fills the management tag when it was left blank', async () => {
+  const { window, panel } = await openPanel();
+  completeBasics(window, panel);
+  setValue(window, field(panel, 'tlx-exit'), '1.0830'); // stopped out
+  field(panel, 'tlx-outcome').value = 'loss';
+  field(panel, 'tlx-outcome').dispatchEvent(new window.Event('change', { bubbles: true }));
+
+  panel.querySelector('#tlx-send').click();
+  await new Promise(resolve => setTimeout(resolve, 80));
+
+  const saved = window.chrome.__store.__saved;
+  assert.equal(saved.status, 'Stop Loss');
+  assert.equal(saved.mgmt, 'Stop Loss Hit', 'management column is not left blank');
+  assert.ok(saved.pnl < 0 && Math.abs(saved.r + 1) < 1e-9, 'a stop-out is -$20 and -1R');
+});
+
+domTest('the result preview shows the money and R before sending', async () => {
+  const { window, panel } = await openPanel();
+  setValue(window, field(panel, 'tlx-symbol'), 'EUR/USD');
+  setValue(window, field(panel, 'tlx-entry'), '1.0850');
+  setValue(window, field(panel, 'tlx-sl'), '1.0830');
+  setValue(window, field(panel, 'tlx-tp'), '1.0910');
+  setValue(window, field(panel, 'tlx-lots'), '0.10');
+  setValue(window, field(panel, 'tlx-exit'), '1.0910');
+  field(panel, 'tlx-outcome').value = 'win';
+  field(panel, 'tlx-outcome').dispatchEvent(new window.Event('change', { bubbles: true }));
+
+  assert.equal(field(panel, 'tlx-result-pnl').textContent, '+$60.00');
+  assert.equal(field(panel, 'tlx-result-r').textContent, '3.00R');
+});
+
+domTest('tags that are set are counted in the collapsed summary', async () => {
+  const { window, panel } = await openPanel();
+  assert.equal(field(panel, 'tlx-tag-count').textContent, '0/6 set');
+  field(panel, 'tlx-exec').value = 'VHB + Engulf Trigger';
+  field(panel, 'tlx-exec').dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(field(panel, 'tlx-tag-count').textContent, '1/6 set');
 });
 
 domTest('a screenshot URL travels as screenshotUrl with no inline image', async () => {
@@ -303,7 +394,7 @@ domTest('a fresh panel opens clean, with nothing from the previous trade', async
   assert.ok(fresh, 'panel reopened');
 
   const tradeFields = [
-    'tlx-symbol', 'tlx-entry', 'tlx-sl', 'tlx-tp', 'tlx-lots',
+    'tlx-symbol', 'tlx-entry', 'tlx-sl', 'tlx-tp', 'tlx-exit', 'tlx-lots',
     'tlx-balance', 'tlx-risk-pct', 'tlx-point-value', 'tlx-outcome',
     'tlx-exec', 'tlx-bias', 'tlx-mgmt', 'tlx-session', 'tlx-emotion', 'tlx-type'
   ];
@@ -314,6 +405,7 @@ domTest('a fresh panel opens clean, with nothing from the previous trade', async
   // Only this-moment values are set.
   assert.equal(field(fresh, 'tlx-dir').value, 'buy');
   assert.ok(field(fresh, 'tlx-date').value, 'date/time stamped now');
+  assert.ok(field(fresh, 'tlx-closed').value, 'close time stamped now');
 
   // Nothing about the previous trade is written to storage.
   assert.equal(window.chrome.__store.tlxLastUsed, undefined);

@@ -88,8 +88,11 @@ test('content scripts point at files that exist', () => {
 test('the trade payload keys the journal expects are still sent', () => {
   // Guards against a rename in exness.js quietly breaking the journal import.
   const content = fs.readFileSync(path.join(root, 'exness.js'), 'utf8');
-  for (const key of ['externalId', 'symbol', 'dir', 'entry', 'sl', 'tp', 'lots', 'date',
-    'exec', 'bias', 'mgmt', 'sess', 'emotion', 'outcome', 'entryType', 'screenshot']) {
+  // `exit`, `pnl`, `r` and `status` are what stop the journal from drawing an
+  // imported trade as an open position.
+  for (const key of ['externalId', 'symbol', 'dir', 'entry', 'sl', 'tp', 'exit', 'lots', 'date',
+    'exec', 'bias', 'mgmt', 'sess', 'emotion', 'outcome', 'entryType', 'screenshot',
+    'pnl', 'r', 'status', 'closedAt', 'durationMinutes']) {
     assert.match(content, new RegExp(`\\b${key}:`), `trade payload should include ${key}`);
   }
 });

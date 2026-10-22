@@ -38,9 +38,24 @@ and time. The single thing remembered is where you dragged the panel to.
      re-shoot without closing the panel.
    - **Paste image URL** — uses a link instead of an inline image (handy for large charts).
    - **Remove** — clears it; you then need a retake or a URL before sending.
-4. **Outcome** is required; **Journal tags** (execution, setup, management, session,
-   emotion, entry type) sit in a collapsed section and never block a send.
-5. **Send to TradeLog** — the panel closes and the trade goes to the journal.
+4. **Outcome** is required, and so is where the trade actually ended:
+   **Exit price** and **Closed at**. Type the price you closed at (or paste it) and the
+   panel shows the result live — **P&L**, **R** and **duration** — before anything is
+   sent. `Open / pending` is the exception: it needs no exit.
+5. **Journal tags** (execution, setup, management, session, emotion, entry type) sit in a
+   collapsed section, headed with how many of the six are set. They never block a send.
+   If *Trade management* is left blank, it is filled from where price exited
+   (Full TP / Stop Loss Hit / Moved to BE / Manual Close).
+6. **Send to TradeLog** — the panel closes and the trade goes to the journal.
+
+### Why the exit price is required
+
+The journal draws a trade as an **open position** — exit `—`, P&L `+$0.00`, `0R`,
+duration `0m`, status `Open` — unless it is told where the position was closed. Earlier
+versions of this extension never sent that, so extension-logged trades looked
+half-journalled next to broker-imported ones, which do carry an exit. The panel now
+sends the exit price, the close time, the result in money, the R multiple, the duration
+and a close reason.
 
 The panel is draggable by its header, floats above the chart without blocking it, and
 remembers where you left it. `Esc` closes it.
@@ -73,6 +88,24 @@ If capture fails, open the popup and press **Test screenshot** for the exact err
 check `chrome://extensions` → Details → **Site access** is *On all sites*; "On click"
 revokes `<all_urls>`.
 
+## The trade payload
+
+```js
+{
+  externalId, symbol, dir, entry, sl, tp, lots, date,      // the setup
+  exec, bias, mgmt, sess, emotion, entryType, outcome,     // journal tags
+  screenshot, screenshotUrl,                               // chart
+  // the result — what makes a row journal as closed instead of "Open"
+  exit, closedAt, status, pnl, r, durationMinutes, management,
+  pointValue, riskAmount, riskPercent, rewardRisk          // calculator extras
+}
+```
+
+`status` is `Full TP`, `Stop Loss`, `Break Even`, `Manual Close` or `Open`;
+`pnl` and `r` are derived from `exit − entry`, lots and the contract value. If the
+journal's import receiver ignores these keys it will keep painting imported trades as
+open, so it has to read them.
+
 ## Journal handoff
 
 `Send to TradeLog` stores the trade in `chrome.storage.local`, activates an open journal
@@ -96,6 +129,18 @@ happened.
 `tests/config.test.js` fails if they drift apart, so run `npm test` after editing any of
 them. The journal's own `index.html` must also contain the import receiver.
 
+## Panel preview without Exness
+
+`demo/index.html` mocks the `chrome` API and loads the real `lot-math.js` + `exness.js`,
+so the panel can be opened in an ordinary browser tab:
+
+```bash
+python3 -m http.server 8099     # from the extension folder
+# then open http://localhost:8099/demo/
+```
+
+Nothing is sent anywhere; a submitted trade is printed to the console instead.
+
 ## Tests
 
 ```bash
@@ -116,7 +161,9 @@ before sending. Without `jsdom` the DOM tests are skipped rather than failing.
 ## Notes and limits
 
 - The screenshot is the visible viewport, compressed to JPEG.
-- The journal import creates a trade with P&L zero and R zero; it records the setup, not a
-  broker-confirmed result.
+- P&L and R come from the exit price you type, times the contract value in the
+  calculator (borrowed from the instrument model when you have not entered one). They are
+  the panel's arithmetic, not a broker statement — paste the broker's exact exit price and
+  check the preview before sending.
 - Because nothing is read from the terminal, a typo in a pasted price is yours to catch —
   the panel only checks that entry, stop and target sit on the correct sides of each other.
