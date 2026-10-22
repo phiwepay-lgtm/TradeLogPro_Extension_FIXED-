@@ -1,6 +1,12 @@
+/* The journal host, most preferred first. Keep this list in sync with the
+ * journal host_permissions and content-script matches in manifest.json —
+ * tests/config.test.js fails if they drift apart.
+ *
+ * Both older hosts (trading-journa.vercel.app and
+ * indexhtml-glt-main-royak-kings-circle.vercel.app) are deleted deployments
+ * that now return DEPLOYMENT_NOT_FOUND, so they are gone from this list. */
 const JOURNAL_URLS = [
-  'https://trading-journa.vercel.app/',
-  'https://indexhtml-glt-main-royak-kings-circle.vercel.app/'
+  'https://indexhtml-olive-delta.vercel.app/'
 ];
 
 /** Map Chrome's raw capture errors onto something actionable. */

@@ -81,10 +81,20 @@ tab, and posts it to the page. The trade carries `screenshot` (a data URL) and
 `journal-bridge.js` retries while the page boots, clears the stored trade only after the
 page acknowledges it, and retries again when the tab becomes visible.
 
-Recognised hosts: `https://trading-journa.vercel.app/` and
-`https://indexhtml-glt-main-royak-kings-circle.vercel.app/`. For another host, add it to
-`manifest.json` (host permissions and content-script matches) and to `JOURNAL_URLS` in
-`background.js`.
+The journal host is `https://indexhtml-olive-delta.vercel.app/`. The two older hosts this
+extension used to point at (`trading-journa.vercel.app` and
+`indexhtml-glt-main-royak-kings-circle.vercel.app`) are deleted Vercel deployments that
+return `DEPLOYMENT_NOT_FOUND`, so sending a trade there opened a 404 and the import never
+happened.
+
+**Changing hosts?** Three places must agree, or the failure is silent:
+
+1. `JOURNAL_URLS` in `background.js`
+2. `host_permissions` in `manifest.json`
+3. the `journal-bridge.js` entry in `content_scripts[].matches`
+
+`tests/config.test.js` fails if they drift apart, so run `npm test` after editing any of
+them. The journal's own `index.html` must also contain the import receiver.
 
 ## Tests
 
@@ -93,7 +103,10 @@ npm install     # jsdom, for the DOM tests
 npm test
 ```
 
-`tests/lot-math.test.js` covers pasted-number parsing, instrument contract values and lot
+`tests/config.test.js` guards the journal wiring: every `JOURNAL_URLS` entry must appear in
+both `host_permissions` and the content-script matches, no dead hosts may linger, and the
+trade payload still carries the keys the journal expects. `tests/lot-math.test.js` covers
+pasted-number parsing, instrument contract values and lot
 sizing. `tests/panel.test.js` loads the real content scripts into a DOM with a mocked
 `chrome` API and checks the panel floats in a shadow root, opens with **no values from the
 previous trade** (both after closing and after sending), cleans pasted values, retakes the
