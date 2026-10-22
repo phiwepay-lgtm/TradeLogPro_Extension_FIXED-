@@ -270,3 +270,68 @@ domTest('describeDetection names what was found', () => {
   assert.match(text, /lots 0\.2/);
   assert.match(text, /SL 1\.083/);
 });
+
+/* ------------------------------------------------------------ frame merging */
+
+test('serialiseFields drops DOM references but keeps the label trail', () => {
+  const fields = {
+    lots: [{ value: 0.1, raw: '0.10', label: 'Volume', source: 'label', roles: ['lots'], input: {} }],
+    entry: [], sl: [], tp: [], balance: [], riskPct: [], amount: [], price: []
+  };
+  const wire = D.serialiseFields(fields);
+  assert.equal(wire.lots[0].label, 'Volume');
+  assert.equal(wire.lots[0].input, undefined);
+  assert.deepEqual(Object.keys(wire).sort(), ['amount', 'balance', 'entry', 'lots', 'price', 'riskPct', 'sl', 'tp']);
+});
+
+test('mergeScans combines a chart frame with a ticket frame', () => {
+  const chart = { url: 'https://my.exness.com/chart', scanned: 4, symbol: '', direction: 'sell', textAmount: null, fields: {}, empty: [] };
+  const ticket = {
+    url: 'https://my.exness.com/ticket',
+    scanned: 5,
+    symbol: 'XAU/USD',
+    direction: '',
+    textAmount: 25,
+    empty: [{ label: 'Take Profit' }],
+    fields: { sl: [{ value: 2395, raw: '2395', label: 'Stop Loss', source: 'label' }] }
+  };
+
+  const merged = D.mergeScans([chart, ticket]);
+  assert.equal(merged.frames, 2);
+  assert.equal(merged.scanned, 9);
+  assert.equal(merged.emptyTotal, 1);
+  assert.equal(merged.symbol, 'XAU/USD', 'symbol from the frame that had one');
+  assert.equal(merged.direction, 'sell', 'direction from the frame that had one');
+  assert.equal(merged.textAmount, 25);
+  assert.equal(merged.fields.sl[0].value, 2395);
+});
+
+test('mergeScans drops duplicate findings so ranking stays honest', () => {
+  const frame = role => ({
+    url: 'u', scanned: 1, symbol: '', direction: '', textAmount: null, empty: [],
+    fields: { [role]: [{ value: 1.085, raw: '1.085', label: 'Entry', source: 'label' }] }
+  });
+
+  const merged = D.mergeScans([frame('entry'), frame('entry'), frame('entry')]);
+  assert.equal(merged.fields.entry.length, 1);
+});
+
+test('mergeScans tolerates empty and malformed payloads', () => {
+  const merged = D.mergeScans([null, undefined, {}, { fields: { lots: [] } }]);
+  assert.deepEqual(merged.fields.lots, []);
+  assert.equal(merged.scanned, 0);
+  assert.equal(merged.frames, 2, 'null payloads are dropped');
+});
+
+test('attachLocalInputs reconnects the live lot input', () => {
+  const input = { tag: 'input' };
+  const local = { lots: [{ value: 0.1, label: 'Volume', source: 'label', input }] };
+  const merged = { lots: [{ value: 0.1, label: 'Volume', source: 'label' }] };
+
+  D.attachLocalInputs(merged, local);
+  assert.equal(merged.lots[0].input, input);
+
+  const fromElsewhere = { lots: [{ value: 0.2, label: 'Volume', source: 'label' }] };
+  D.attachLocalInputs(fromElsewhere, local);
+  assert.equal(fromElsewhere.lots[0].input, undefined, 'never borrow a node it does not own');
+});

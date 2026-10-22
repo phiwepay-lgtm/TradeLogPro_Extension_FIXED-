@@ -25,7 +25,8 @@ such as `https://*.exness.com/*` is *not* enough — this is why earlier builds 
 toolbar click and then silently stopped working after a page reload.
 
 This build declares `<all_urls>` in `host_permissions`, so screenshots work immediately
-after reloading the extension, with no icon clicking. Content scripts are still injected
+after reloading the extension, with no icon clicking. It also requests `scripting`, which
+is what lets the worker read the order ticket in every frame of the tab. Content scripts are still injected
 only on Exness, XM, TradingView, and the TradeLog hosts, so no other site is touched.
 
 If a capture still fails:
@@ -36,6 +37,24 @@ If a capture still fails:
   `<all_urls>`, and capture will fail again.
 - The Exness tab must be the active tab of its window (not minimised, not in the
   background).
+
+## Frames
+
+The Exness terminal splits the chart and the order ticket across iframes, and the
+`＋ Log trade` button belongs to the chart. Detection therefore never trusts one document:
+
+- Every frame exposes `window.__tlxScan()`, and the worker calls it in **all frames**
+  with `chrome.scripting.executeScript({ allFrames: true })`.
+- The results are merged (`TLXDetect.mergeScans`), so entry can come from one frame and
+  lot size from another. Duplicate findings are dropped.
+- The panel itself is rendered **only in the top frame**, inside an open shadow root
+  (`#tlx-shadow-host`). `position: fixed` then covers the whole browser window instead of
+  being clipped inside the chart frame, and the terminal's stylesheet cannot reach the
+  inputs — that CSS bleed is what previously made the fields impossible to type into.
+- A double-click on Long/Short Position raised inside a child frame is relayed through
+  the worker to frame 0, which opens the panel.
+- `Use recommended lot` asks the worker to apply the size in every frame, so the size
+  lands in the frame that actually owns the volume field.
 
 ## What the panel detects
 
@@ -60,6 +79,9 @@ Details that matter:
 - A currency figure next to the stop is treated as **money at risk**, never as the stop
   price.
 - Empty and hidden controls are reported but not used, so nothing is invented.
+- If no order ticket is on screen at all, the panel says **"No trade panel found — open
+  the Long Position or Short Position tool"** instead of showing an empty form. Use
+  **Rescan order panel** after opening the tool.
 - Every field stays editable, and the panel prints a **Detected:** line naming the label
   each value came from, plus how many controls it scanned. If a value is missing there,
   the terminal is not exposing it and you type it in yourself.
@@ -103,10 +125,11 @@ npm install          # jsdom, for the DOM tests
 npm test
 ```
 
-`tests/detect.test.js` covers number parsing, label classification, contract values and
-lot sizing. `tests/panel.test.js` loads the real content scripts into a DOM with a mocked
-`chrome` API and checks the panel fills from a ticket and refuses to send an unsized
-trade. Without `jsdom` installed the DOM tests are skipped rather than failing.
+`tests/detect.test.js` covers number parsing, label classification, contract values, lot
+sizing and cross-frame merging. `tests/panel.test.js` loads the real content scripts into
+a DOM with a mocked `chrome` API and checks the panel renders inside its shadow root,
+merges a ticket found in another frame, applies the recommended lot, and refuses to send
+an unsized trade. Without `jsdom` installed the DOM tests are skipped rather than failing.
 
 ## Notes and limits
 

@@ -33,6 +33,24 @@ function explainCaptureError(raw, extra = {}) {
   };
 }
 
+
+/**
+ * Run a function in every frame of a tab. The Exness terminal lives in frames,
+ * and the order ticket is frequently not in the document holding the chart.
+ */
+async function runInAllFrames(tabId, func, args) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func,
+      args: args || []
+    });
+    return results.map(entry => entry.result).filter(value => value !== undefined && value !== null);
+  } catch (error) {
+    return [];
+  }
+}
+
 async function captureVisibleTab(sender) {
   const tab = sender?.tab;
 
@@ -103,6 +121,53 @@ async function deliverPendingTrade() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'capture-visible-tab') {
     captureVisibleTab(sender).then(sendResponse).catch(error => sendResponse({ error: String(error?.message || error), code: 'unknown' }));
+    return true;
+  }
+
+
+  if (message?.type === 'scan-tab') {
+    (async () => {
+      if (!sender.tab?.id) {
+        sendResponse({ frames: [] });
+        return;
+      }
+      const frames = await runInAllFrames(
+        sender.tab.id,
+        () => (typeof window.__tlxScan === 'function' ? window.__tlxScan() : null)
+      );
+      sendResponse({ frames });
+    })();
+    return true;
+  }
+
+  if (message?.type === 'apply-lot') {
+    (async () => {
+      if (!sender.tab?.id) {
+        sendResponse({ applied: 0 });
+        return;
+      }
+      const results = await runInAllFrames(
+        sender.tab.id,
+        (label, value) => (typeof window.__tlxApplyLot === 'function' ? window.__tlxApplyLot(label, value) : false),
+        [message.label || '', String(message.value ?? '')]
+      );
+      sendResponse({ applied: results.filter(Boolean).length });
+    })();
+    return true;
+  }
+
+  if (message?.type === 'open-trade-panel') {
+    // Raised by a child frame (the chart tool) and answered by the top frame,
+    // which is the only document allowed to render the review panel.
+    if (sender.tab?.id) {
+      chrome.tabs.sendMessage(
+        sender.tab.id,
+        { type: 'open-trade-panel', direction: message.direction || '' },
+        { frameId: 0 },
+        () => void chrome.runtime.lastError
+      );
+    }
+    sendResponse({ ok: true });
     return true;
   }
 
