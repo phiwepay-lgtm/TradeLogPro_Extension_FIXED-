@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TradeLog Pro panel — offline preview</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b0e14; color: #cfd8ea;
+      font: 13px/1.5 system-ui, sans-serif; }
+    .chart { position: fixed; inset: 0; }
+    .chart svg { width: 100%; height: 100%; display: block; opacity: .55; }
+    .note { position: fixed; left: 18px; top: 16px; max-width: 380px; padding: 12px 14px;
+      border: 1px solid #2b3550; border-radius: 10px; background: #131a28cc; line-height: 1.5; }
+    .note b { color: #fff; }
+    .note code { color: #9db8ff; }
+  </style>
+</head>
+<body>
+  <div class="note">
+    <b>Panel preview</b><br>
+    This page mocks the <code>chrome</code> API so the real content script runs outside
+    Exness. Press <b>＋ Log trade</b> (bottom-right) and fill in entry / stop / target /
+    lots / exit to watch P&amp;L, R and duration update before sending.
+  </div>
+
+  <div class="chart" aria-hidden="true">
+    <svg viewBox="0 0 1200 600" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#2b6cff" stop-opacity=".35"/>
+          <stop offset="1" stop-color="#2b6cff" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <g stroke="#1b2333" stroke-width="1">
+        <path d="M0 100H1200M0 200H1200M0 300H1200M0 400H1200M0 500H1200"/>
+      </g>
+      <path fill="url(#g)" d="M0 430 L60 400 L120 415 L180 360 L240 385 L300 330 L360 350
+        L420 300 L480 320 L540 260 L600 285 L660 230 L720 250 L780 200 L840 225 L900 180
+        L960 205 L1020 160 L1080 190 L1140 150 L1200 170 L1200 600 L0 600 Z"/>
+      <path fill="none" stroke="#4a8cff" stroke-width="2" d="M0 430 L60 400 L120 415 L180 360
+        L240 385 L300 330 L360 350 L420 300 L480 320 L540 260 L600 285 L660 230 L720 250
+        L780 200 L840 225 L900 180 L960 205 L1020 160 L1080 190 L1140 150 L1200 170"/>
+    </svg>
+  </div>
+
+  <script>
+    /* ---- minimal chrome shim so exness.js can boot outside the extension ---- */
+    function sampleShot() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 900;
+      canvas.height = 500;
+      const context = canvas.getContext('2d');
+      const sky = context.createLinearGradient(0, 0, 0, 500);
+      sky.addColorStop(0, '#101826');
+      sky.addColorStop(1, '#070a10');
+      context.fillStyle = sky;
+      context.fillRect(0, 0, 900, 500);
+      context.strokeStyle = '#2e7dff';
+      context.lineWidth = 3;
+      context.beginPath();
+      for (let x = 0; x <= 900; x += 20) {
+        const y = 380 - Math.sin(x / 90) * 70 - x / 6;
+        x ? context.lineTo(x, y) : context.moveTo(x, y);
+      }
+      context.stroke();
+      context.fillStyle = '#7f8ea8';
+      context.font = '16px system-ui';
+      context.fillText('mocked chart capture', 24, 34);
+      return canvas.toDataURL('image/jpeg', 0.8);
+    }
+
+    const store = {};
+    window.chrome = {
+      runtime: {
+        id: 'demo-extension',
+        lastError: undefined,
+        onMessage: { addListener() {} },
+        sendMessage(message, callback) {
+          let reply;
+          if (message?.type === 'capture-visible-tab') reply = { screenshot: sampleShot() };
+          else if (message?.type === 'save-trade-to-journal') {
+            store.lastTrade = message.trade;
+            console.log('sent to journal:', message.trade);
+            reply = { ok: true, delivered: true };
+          } else reply = { ok: true };
+          if (callback) callback(reply);
+          return Promise.resolve(reply);
+        }
+      },
+      storage: {
+        local: {
+          get: async key => {
+            const keys = Array.isArray(key) ? key : [key];
+            const out = {};
+            keys.forEach(k => { if (k in store) out[k] = store[k]; });
+            return out;
+          },
+          set: async patch => { Object.assign(store, patch); },
+          remove: async () => {}
+        }
+      }
+    };
+  </script>
+  <script src="../lot-math.js"></script>
+  <script src="../exness.js"></script>
+</body>
+</html>

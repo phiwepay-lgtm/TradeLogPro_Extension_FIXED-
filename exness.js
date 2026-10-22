@@ -376,8 +376,29 @@
           </div>
         </div>
 
+        <div class="tlx-row">
+          <div class="tlx-field">
+            <label for="tlx-exit">Exit price</label>
+            <div class="tlx-input-wrap">
+              <input id="tlx-exit" inputmode="decimal" placeholder="Where you closed" spellcheck="false">
+              <button class="tlx-paste" type="button" data-target="tlx-exit" title="Paste from clipboard">Paste</button>
+            </div>
+          </div>
+          <div class="tlx-field">
+            <label for="tlx-closed">Closed at</label>
+            <input id="tlx-closed" type="datetime-local">
+          </div>
+        </div>
+
+        <div class="tlx-out" id="tlx-result-out">
+          <span>P&amp;L <b id="tlx-result-pnl">—</b></span>
+          <span>R <b id="tlx-result-r">—</b></span>
+          <span>Duration <b id="tlx-result-duration">—</b></span>
+        </div>
+        <div class="tlx-hint" id="tlx-result-note"></div>
+
         <details class="tlx-tags" id="tlx-tags">
-          <summary>Journal tags (optional)</summary>
+          <summary>Journal tags (optional) <span id="tlx-tag-count" style="color:#7f8ea8;font-weight:400">0/6 set</span></summary>
           <div class="tlx-row">
             <div class="tlx-field">
               <label for="tlx-exec">Execution type</label>
@@ -587,6 +608,7 @@
     // No trade values, sizes, prices, tags or screenshots are carried over.
     field('tlx-dir').value = direction === 'sell' ? 'sell' : 'buy';
     field('tlx-date').value = localDateTime(now);
+    field('tlx-closed').value = localDateTime(now);
 
     /* ----------------------------------------------------------- numbers */
 
@@ -603,10 +625,10 @@
       // Keep sign only where a sign is meaningful (none of these fields are negative).
       const cleaned = Math.abs(parsed);
       input.value = String(cleaned);
-      recalculate();
+      updateAll();
     };
 
-    ['tlx-entry', 'tlx-sl', 'tlx-tp', 'tlx-lots', 'tlx-balance', 'tlx-risk-pct', 'tlx-point-value'].forEach(id => {
+    ['tlx-entry', 'tlx-sl', 'tlx-tp', 'tlx-exit', 'tlx-lots', 'tlx-balance', 'tlx-risk-pct', 'tlx-point-value'].forEach(id => {
       const input = field(id);
       input.addEventListener('paste', () => setTimeout(() => cleanField(input), 0));
       input.addEventListener('change', () => cleanField(input));
@@ -672,15 +694,15 @@
       return result;
     };
 
-    ['tlx-entry', 'tlx-sl', 'tlx-tp', 'tlx-lots', 'tlx-balance', 'tlx-risk-pct', 'tlx-point-value'].forEach(id => {
-      field(id).addEventListener('input', recalculate);
+    ['tlx-entry', 'tlx-sl', 'tlx-tp', 'tlx-exit', 'tlx-lots', 'tlx-balance', 'tlx-risk-pct', 'tlx-point-value'].forEach(id => {
+      field(id).addEventListener('input', updateAll);
     });
 
     field('tlx-symbol').addEventListener('change', () => {
       // Re-derive the contract value for the new instrument.
       field('tlx-point-value').value = '';
       field('tlx-risk-note').textContent = '';
-      recalculate();
+      updateAll();
     });
 
     field('tlx-apply-lot').addEventListener('click', () => {
@@ -694,6 +716,130 @@
     });
 
     recalculate();
+
+    /* ------------------------------------------------------------- result */
+
+    /**
+     * The journal paints a trade as open (exit "—", P&L $0.00, 0R, "Open")
+     * unless it is told where the position was closed. Everything here is
+     * derived from what is typed, and shown live so a typo is visible before
+     * the trade is sent.
+     */
+    const resultOf = () => {
+      const num = id => {
+        const raw = field(id).value;
+        if (!raw) return null;
+        const parsed = M ? M.parseNumber(raw) : Number(raw);
+        return parsed === null || Number.isNaN(parsed) ? null : Math.abs(parsed);
+      };
+
+      const dir = field('tlx-dir').value;
+      const outcome = field('tlx-outcome').value;
+      const entry = num('tlx-entry');
+      const sl = num('tlx-sl');
+      const tp = num('tlx-tp');
+      const exit = num('tlx-exit');
+      const lots = num('tlx-lots');
+      const pv = num('tlx-point-value');
+      const opened = field('tlx-date').value ? new Date(field('tlx-date').value) : now;
+      const closed = field('tlx-closed').value ? new Date(field('tlx-closed').value) : null;
+
+      // An exit only counts once it is not an open trade; the preview shows the
+      // arithmetic as soon as a price is typed, whatever the outcome says.
+      const usableExit = outcome === 'pending' ? null : exit;
+
+      const sign = dir === 'sell' ? -1 : 1;
+      const riskAmount = entry !== null && sl !== null && lots !== null && pv !== null
+        ? Math.abs(entry - sl) * pv * lots
+        : null;
+
+      let pnl = null;
+      let r = null;
+      if (usableExit !== null && entry !== null && lots !== null && pv !== null) {
+        pnl = (usableExit - entry) * sign * lots * pv;
+        if (riskAmount) r = pnl / riskAmount;
+      }
+
+      let durationMinutes = null;
+      if (closed && opened && !Number.isNaN(opened.getTime()) && !Number.isNaN(closed.getTime())) {
+        durationMinutes = Math.max(0, Math.round((closed - opened) / 60000));
+      }
+
+      // Close reason, derived the way the journal labels broker-imported rows.
+      let status = 'Open';
+      if (usableExit !== null && entry !== null && sl !== null) {
+        const stopDistance = Math.abs(entry - sl);
+        const tolerance = stopDistance > 0 ? stopDistance * 0.15 : 0;
+        const near = (a, b) => tolerance > 0 && Math.abs(a - b) <= tolerance;
+        if (near(usableExit, entry)) status = 'Break Even';
+        else if (near(usableExit, sl)) status = 'Stop Loss';
+        else if (tp !== null && near(usableExit, tp)) status = 'Full TP';
+        else status = 'Manual Close';
+      }
+
+      const managementFor = {
+        'Break Even': 'Moved to BE',
+        'Stop Loss': 'Stop Loss Hit',
+        'Full TP': 'Full TP',
+        'Manual Close': 'Manual Close'
+      };
+
+      return { dir, outcome, entry, sl, tp, exit: usableExit, lots, pv, opened, closed,
+        riskAmount, pnl, r, durationMinutes, status, management: managementFor[status] || '' };
+    };
+
+    const money = value => (value < 0 ? '-' : '+') + '$' + Math.abs(value).toFixed(2);
+
+    const formatDuration = minutes => {
+      if (minutes === null) return '—';
+      if (minutes < 60) return `${minutes}m`;
+      const hours = Math.floor(minutes / 60);
+      const rest = minutes % 60;
+      return rest ? `${hours}h ${rest}m` : `${hours}h`;
+    };
+
+    const renderResult = () => {
+      const result = resultOf();
+
+      field('tlx-result-pnl').textContent = result.pnl === null ? '—' : money(result.pnl);
+      field('tlx-result-r').textContent = result.r === null ? '—' : `${result.r.toFixed(2)}R`;
+      field('tlx-result-duration').textContent = formatDuration(result.durationMinutes);
+
+      // Auto-fill the management tag when it was left empty, so the journal's
+      // management column is populated instead of showing "—".
+      const blankMgmt = !field('tlx-mgmt').value;
+      field('tlx-result-note').textContent = blankMgmt && result.management
+        ? `Trade management will be recorded as "${result.management}".`
+        : '';
+
+      return result;
+    };
+
+    // The lot calculator and the result preview share inputs, so refresh both.
+    function updateAll() {
+      recalculate();
+      renderResult();
+    }
+
+    ['tlx-dir', 'tlx-outcome', 'tlx-date', 'tlx-closed'].forEach(id => {
+      field(id).addEventListener('input', renderResult);
+      field(id).addEventListener('change', renderResult);
+    });
+
+    /* ------------------------------------------------------- tags counter */
+
+    const TAG_FIELDS = ['tlx-exec', 'tlx-bias', 'tlx-mgmt', 'tlx-session', 'tlx-emotion', 'tlx-type'];
+    const updateTagCount = () => {
+      const set = TAG_FIELDS.filter(id => field(id).value).length;
+      field('tlx-tag-count').textContent = `${set}/${TAG_FIELDS.length} set`;
+    };
+    TAG_FIELDS.forEach(id => {
+      field(id).addEventListener('change', updateTagCount);
+      field(id).addEventListener('input', updateTagCount);
+    });
+    updateTagCount();
+
+    renderResult();
 
     /* ---------------------------------------------------------------- send */
 
@@ -784,6 +930,59 @@
       trade.riskPercent = balance > 0 ? trade.riskAmount / balance * 100 : 0;
       trade.riskTargetPercent = Number(field('tlx-risk-pct').value) || 0;
       trade.riskBudget = balance > 0 ? balance * trade.riskTargetPercent / 100 : 0;
+
+      /* ------------------------------------------------------- the result */
+
+      // The journal has no way to know a trade finished unless it is told where
+      // it closed: without an exit it draws the row as an open position — exit
+      // "—", P&L $0.00, R 0R, duration 0m and status "Open". Old broker-imported
+      // rows carry that exit, which is why they show a real P&L and R.
+      const typedExit = number('tlx-exit');
+      const closedAt = field('tlx-closed').value ? new Date(field('tlx-closed').value) : null;
+      const openedAt = field('tlx-date').value ? new Date(field('tlx-date').value) : now;
+
+      const openTrade = trade.outcome === 'pending';
+      if (!openTrade) {
+        if (!typedExit) {
+          errorBox.textContent = 'Enter the exit price — or choose "Open / pending" if the trade is still running.';
+          return;
+        }
+        if (closedAt && !Number.isNaN(closedAt.getTime()) && closedAt < openedAt) {
+          errorBox.textContent = 'The close time is before the trade date. Check both times.';
+          return;
+        }
+
+        // A result has to agree with where price actually left the trade.
+        const beyondEntry = (typedExit - trade.entry) * (directionValue === 'buy' ? 1 : -1);
+        const stopDistance = Math.abs(trade.entry - trade.sl);
+        if (trade.outcome === 'win' && !(beyondEntry > 0)) {
+          errorBox.textContent = 'Marked a win, but the exit price is not beyond entry in the trade\'s direction. Check the exit.';
+          return;
+        }
+        if (trade.outcome === 'loss' && !(beyondEntry < 0)) {
+          errorBox.textContent = 'Marked a loss, but the exit price is on the winning side of entry. Check the exit.';
+          return;
+        }
+        if (trade.outcome === 'be' && stopDistance > 0 && Math.abs(beyondEntry) > stopDistance * 0.25) {
+          errorBox.textContent = 'Marked break even, but the exit is more than a quarter of the stop distance away from entry.';
+          return;
+        }
+      }
+
+      const measured = resultOf();
+      Object.assign(trade, {
+        exit: openTrade ? 0 : typedExit,
+        closedAt: openTrade || !closedAt || Number.isNaN(closedAt.getTime()) ? '' : closedAt.toISOString(),
+        status: openTrade ? 'Open' : measured.status,
+        pnl: openTrade || measured.pnl === null ? 0 : Number(measured.pnl.toFixed(2)),
+        r: openTrade || measured.r === null ? 0 : Number(measured.r.toFixed(3)),
+        durationMinutes: openTrade || measured.durationMinutes === null ? 0 : measured.durationMinutes,
+        management: openTrade ? '' : measured.management
+      });
+
+      // Where the trade actually ended up also fills the management tag, so the
+      // journal's management column is not left blank.
+      if (!trade.mgmt && trade.management) trade.mgmt = trade.management;
 
       const result = await send({ type: 'save-trade-to-journal', trade });
       if (result?.stale) {

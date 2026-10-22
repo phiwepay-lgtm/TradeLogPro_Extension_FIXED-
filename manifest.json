@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TradeLog Pro for Exness",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "description": "Capture a chart and log a trade to TradeLog Pro Journal.",
   "permissions": [
     "storage",
