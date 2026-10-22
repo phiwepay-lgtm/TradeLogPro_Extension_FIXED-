@@ -1,0 +1,70 @@
+{
+  "manifest_version": 3,
+  "name": "TradeLog Pro for Exness",
+  "version": "1.1.0",
+  "description": "Capture a chart and send reviewed trade details to TradeLog Pro Journal.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab"
+  ],
+  "action": {
+    "default_title": "Enable TradeLog screenshot capture",
+    "default_popup": "popup.html"
+  },
+  "host_permissions": [
+    "https://my.exness.com/*",
+    "https://*.exness.com/*",
+
+    "https://my.xm.com/*",
+    "https://*.xm.com/*",
+    "https://xm.com/*",
+
+    "https://tradingview.com/*",
+    "https://*.tradingview.com/*",
+
+    "https://indexhtml-glt-main-royak-kings-circle.vercel.app/*",
+    "https://trading-journa.vercel.app/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://my.exness.com/*",
+        "https://*.exness.com/*"
+      ],
+      "js": ["exness.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://my.xm.com/*",
+        "https://*.xm.com/*",
+        "https://xm.com/*"
+      ],
+      "js": ["exness.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://tradingview.com/*",
+        "https://*.tradingview.com/*"
+      ],
+      "js": ["exness.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://indexhtml-glt-main-royak-kings-circle.vercel.app/*",
+        "https://trading-journa.vercel.app/*"
+      ],
+      "js": ["journal-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
